@@ -2,6 +2,72 @@ import yaml
 from dataclasses import dataclass
 import curses
 import random
+import time
+import pyaudio
+import av
+
+CONFIG_FILE = "./music.yaml"
+LOOP_PERIOD = 50  # ms
+
+
+def get_audio_data(frame):
+    audio_data = frame.to_ndarray().astype("float32")
+    interleaved_data = audio_data.T.flatten().tobytes()
+    return interleaved_data
+
+
+class AudioPlayer:
+    p: pyaudio.PyAudio
+
+    is_playing: bool
+
+    def __init__(self):
+        self.p = pyaudio.PyAudio()
+
+    def __del__(self):
+        self.p.terminate()
+
+    def play_file(self, filename):
+        container = av.open(filename)
+        audio_stream = container.streams.best("audio")
+        frame_iterator = container.decode(audio=0)
+        channels = audio_stream.channels
+
+        bytesdata = b""
+        idx = 0
+
+        def callback(in_data, frame_count, time_info, status):
+            nonlocal bytesdata, idx
+
+            print(f"{len(bytesdata) / 1024} Kb")
+
+            offset = 4 * channels * frame_count
+
+            while idx + offset > len(bytesdata):
+                if frame_iterator:
+                    frame = next(frame_iterator)
+                    bytesdata += get_audio_data(frame)
+                else:
+                    bytesdata[idx:], pyaudio.paComplete
+
+            bytesdata = bytesdata[idx:]
+            idx = offset
+            return bytesdata[:idx], pyaudio.paContinue
+
+        device = self.p.open(
+            format=pyaudio.paFloat32,
+            channels=channels,
+            rate=audio_stream.rate,
+            output=True,
+            stream_callback=callback,
+        )
+
+        time.sleep(10)
+
+        audio_stream.close()
+        container.close()
+        device.stop_stream()
+        device.close()
 
 
 @dataclass
@@ -64,11 +130,13 @@ class State:
     stack: [Mode]
     config: Config
     stdscr: curses.window
+    #  audio: AudioPlayer
 
     def __init__(self, config, stdscr):
         self.stack = []
         self.config = config
         self.stdscr = stdscr
+        #  self.audio = AudioPlayer()
 
     def generate_mode(self, preset: ModePreset) -> Mode:
         playlist_size = len(self.config.playlists[preset.playlist_name].tracks)
@@ -175,33 +243,50 @@ class State:
             else:
                 self.pop_mode()
 
+    def pause_track(self):
+        pass
+
+    def process_key(self, keycode):
+        if keycode == ord("q"):
+            if len(self.stack) == 0:
+                return True
+            else:
+                self.pop_mode()
+
+        elif keycode == ord("s"):
+            self.skip_track()
+
+        elif keycode == ord(" "):
+            self.pause_track()
+
+        elif keycode in [ord(x) for x in self.config.modes]:
+            self.add_mode(chr(keycode))
+
+        self.refresh_stdscr()
+
+        return False
+
     def begin(self):
+        self.stdscr.nodelay(True)
         self.refresh_stdscr()
 
         while True:
-            key = self.stdscr.getkey()
+            keycode = self.stdscr.getch()
 
-            if key == "q":
-                if len(self.stack) == 0:
-                    break
-                else:
-                    self.pop_mode()
+            while keycode != curses.ERR:
+                do_exit = self.process_key(keycode)
 
-            elif key == "s":
-                self.skip_track()
+                if do_exit:
+                    return
 
-            elif key in self.config.modes:
-                self.add_mode(key)
+                keycode = self.stdscr.getch()
 
-            self.refresh_stdscr()
-
-
-CONFIG_FILE = "./music.yaml"
+            time.sleep(LOOP_PERIOD / 1000)
 
 
 def parse_config(config_filename: str):
     config_dict = None
-    with open(CONFIG_FILE) as config_file:
+    with open(config_filename) as config_file:
         config_dict = yaml.safe_load(config_file)
 
     config = Config(playlists={}, modes={})
@@ -237,4 +322,8 @@ def main(stdscr):
     state.begin()
 
 
-curses.wrapper(main)
+#  curses.wrapper(main)
+
+audio = AudioPlayer()
+
+audio.play_file("./Burzum - Emptiness.mp3")
