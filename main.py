@@ -125,6 +125,19 @@ class State:
 
         self.stack.append(self.generate_mode(self.config.modes[n]))
 
+    def pop_mode(self):
+        pass
+
+    def skip_track(self):
+        mode = self.stack[-1]
+        mode.current_idx += 1
+
+        if mode.current_idx == len(mode.track_order):
+            if mode.loop:
+                mode.current_idx = 0
+            else:
+                self.pop_mode()
+
     def begin(self):
         self.refresh_stdscr()
         self.stdscr.getkey()

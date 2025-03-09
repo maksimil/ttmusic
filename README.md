@@ -6,13 +6,13 @@ A terminal ui music player for tabletop rpg sessions.
 
 ```mermaid
 stateDiagram-v2
-    classDef action font-style:italic,fill:#ffb2ae
+    classDef action font-style:italic
 
     init : waiting on the empty stack
     playing : playing/paused on top of the stack
-    add : add to the stack
-    skip : skip track
-    pop : pop the stack
+    add : add_mode
+    skip : skip_track
+    pop : pop_mode
     state track_end <<choice>>
 
     class add, skip, pop action
