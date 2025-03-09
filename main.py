@@ -5,6 +5,7 @@ import random
 import time
 import pyaudio
 import av
+import typing
 
 CONFIG_FILE = "./music.yaml"
 LOOP_PERIOD = 50  # ms
@@ -17,57 +18,84 @@ def get_audio_data(frame):
 
 
 class AudioPlayer:
-    p: pyaudio.PyAudio
-
+    is_paused: bool
     is_playing: bool
 
+    p: pyaudio.PyAudio
+
+    device: pyaudio.PyAudio.Stream
+
+    container: av.container.InputContainer
+    audio_stream: av.stream.Stream
+    frame_iterator: typing.Iterator[av.audio.frame.AudioFrame]
+    bytesdata: bytes
+    idx: int
+
     def __init__(self):
+        self.is_paused = False
+        self.is_playing = False
+
         self.p = pyaudio.PyAudio()
 
+        self.device = None
+
+        self.container = None
+        self.audio_stream = None
+        self.frame_iterator = None
+        self.bytesdata = None
+        self.idx = None
+
     def __del__(self):
+        self.stop_playback()
         self.p.terminate()
 
-    def play_file(self, filename):
-        container = av.open(filename)
-        audio_stream = container.streams.best("audio")
-        frame_iterator = container.decode(audio=0)
-        channels = audio_stream.channels
-
-        bytesdata = b""
-        idx = 0
-
+    def get_callback(self):
         def callback(in_data, frame_count, time_info, status):
-            nonlocal bytesdata, idx
+            nonlocal self
 
-            print(f"{len(bytesdata) / 1024} Kb")
+            offset = 4 * self.audio_stream.channels * frame_count
 
-            offset = 4 * channels * frame_count
+            if self.is_paused:
+                return bytes(bytearray(offset)), pyaudio.paContinue
 
-            while idx + offset > len(bytesdata):
-                if frame_iterator:
-                    frame = next(frame_iterator)
-                    bytesdata += get_audio_data(frame)
+            while self.idx + offset > len(self.bytesdata):
+                if self.frame_iterator:
+                    frame = next(self.frame_iterator)
+                    self.bytesdata += get_audio_data(frame)
                 else:
-                    bytesdata[idx:], pyaudio.paComplete
+                    self.is_playing = False
+                    return self.bytesdata[self.idx :], pyaudio.paComplete
 
-            bytesdata = bytesdata[idx:]
-            idx = offset
-            return bytesdata[:idx], pyaudio.paContinue
+            self.bytesdata = self.bytesdata[self.idx :]
+            self.idx = offset
+            return self.bytesdata[: self.idx], pyaudio.paContinue
 
-        device = self.p.open(
+        return callback
+
+    def play_file(self, filename):
+        self.stop_playback()
+        self.is_playing = True
+
+        self.container = av.open(filename)
+        self.audio_stream = self.container.streams.best("audio")
+        self.frame_iterator = self.container.decode(audio=self.audio_stream.index)
+
+        self.bytesdata = b""
+        self.idx = 0
+
+        self.device = self.p.open(
             format=pyaudio.paFloat32,
-            channels=channels,
-            rate=audio_stream.rate,
+            channels=self.audio_stream.channels,
+            rate=self.audio_stream.rate,
             output=True,
-            stream_callback=callback,
+            stream_callback=self.get_callback(),
         )
 
-        time.sleep(10)
-
-        audio_stream.close()
-        container.close()
-        device.stop_stream()
-        device.close()
+    def stop_playback(self):
+        if self.is_playing:
+            self.device.stop_stream()
+            self.device.close()
+            self.container.close()
 
 
 @dataclass
@@ -130,13 +158,13 @@ class State:
     stack: [Mode]
     config: Config
     stdscr: curses.window
-    #  audio: AudioPlayer
+    audio: AudioPlayer
 
     def __init__(self, config, stdscr):
         self.stack = []
         self.config = config
         self.stdscr = stdscr
-        #  self.audio = AudioPlayer()
+        self.audio = AudioPlayer()
 
     def generate_mode(self, preset: ModePreset) -> Mode:
         playlist_size = len(self.config.playlists[preset.playlist_name].tracks)
@@ -212,6 +240,16 @@ class State:
         self.stdscr.move(self.stdscr.getmaxyx()[0] - 1, 0)
         self.stdscr.refresh()
 
+    def play_current_track(self):
+        if len(self.stack) != 0:
+            mode = self.stack[-1]
+            filename = self.config.playlists[mode.playlist_name].tracks[
+                mode.track_order[mode.current_idx]
+            ]
+            self.audio.play_file(filename)
+        else:
+            self.audio.stop_playback()
+
     def add_mode(self, n):
         n = str(n)
 
@@ -219,9 +257,11 @@ class State:
             return
 
         self.stack.append(self.generate_mode(self.config.modes[n]))
+        self.play_current_track()
 
     def pop_mode(self):
         self.stack.pop()
+        self.play_current_track()
 
     def skip_track(self):
         if len(self.stack) == 0:
@@ -242,8 +282,12 @@ class State:
                     )
             else:
                 self.pop_mode()
+                return
 
-    def pause_track(self):
+        self.play_current_track()
+
+    def switch_pause(self):
+        self.audio.is_paused = not self.audio.is_paused
         pass
 
     def process_key(self, keycode):
@@ -257,7 +301,7 @@ class State:
             self.skip_track()
 
         elif keycode == ord(" "):
-            self.pause_track()
+            self.switch_pause()
 
         elif keycode in [ord(x) for x in self.config.modes]:
             self.add_mode(chr(keycode))
@@ -280,6 +324,9 @@ class State:
                     return
 
                 keycode = self.stdscr.getch()
+
+            if not self.audio.is_playing:
+                self.skip_track()
 
             time.sleep(LOOP_PERIOD / 1000)
 
@@ -322,8 +369,4 @@ def main(stdscr):
     state.begin()
 
 
-#  curses.wrapper(main)
-
-audio = AudioPlayer()
-
-audio.play_file("./Burzum - Emptiness.mp3")
+curses.wrapper(main)

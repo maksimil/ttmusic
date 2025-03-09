@@ -13,9 +13,10 @@ stateDiagram-v2
     add : add_mode
     skip : skip_track
     pop : pop_mode
+    switch : pause/unpause
     state track_end <<choice>>
 
-    class add, skip, pop action
+    class add, skip, pop, switch action
 
     [*] --> init
 
@@ -35,4 +36,7 @@ stateDiagram-v2
     skip --> track_end
 
     playing --> pop : q
+
+    playing --> switch : space
+    switch --> playing
 ```
