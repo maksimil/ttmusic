@@ -6,6 +6,7 @@ import time
 import pyaudio
 import av
 import typing
+import math
 
 CONFIG_FILE = "./music.yaml"
 LOOP_PERIOD = 50  # ms
@@ -19,7 +20,7 @@ def get_audio_data(frame):
 
 class AudioPlayer:
     is_paused: bool
-    is_playing: bool
+    is_queued: bool
 
     p: pyaudio.PyAudio
 
@@ -31,9 +32,12 @@ class AudioPlayer:
     bytesdata: bytes
     idx: int
 
+    track_time: float
+    track_size: float
+
     def __init__(self):
         self.is_paused = False
-        self.is_playing = False
+        self.is_queued = False
 
         self.p = pyaudio.PyAudio()
 
@@ -44,6 +48,9 @@ class AudioPlayer:
         self.frame_iterator = None
         self.bytesdata = None
         self.idx = None
+
+        self.track_time = 0.0
+        self.track_size = 0.0
 
     def __del__(self):
         self.stop_playback()
@@ -59,11 +66,12 @@ class AudioPlayer:
                 return bytes(bytearray(offset)), pyaudio.paContinue
 
             while self.idx + offset > len(self.bytesdata):
-                if self.frame_iterator:
-                    frame = next(self.frame_iterator)
+                frame = next(self.frame_iterator, None)
+                if frame is not None:
                     self.bytesdata += get_audio_data(frame)
+                    self.track_time = float(frame.pts * frame.time_base)
                 else:
-                    self.is_playing = False
+                    self.is_queued = False
                     return self.bytesdata[self.idx :], pyaudio.paComplete
 
             self.bytesdata = self.bytesdata[self.idx :]
@@ -74,11 +82,16 @@ class AudioPlayer:
 
     def play_file(self, filename):
         self.stop_playback()
-        self.is_playing = True
+        self.is_queued = True
 
         self.container = av.open(filename)
         self.audio_stream = self.container.streams.best("audio")
         self.frame_iterator = self.container.decode(audio=self.audio_stream.index)
+
+        self.track_time = 0.0
+        self.track_size = float(
+            self.audio_stream.duration * self.audio_stream.time_base
+        )
 
         self.bytesdata = b""
         self.idx = 0
@@ -92,10 +105,14 @@ class AudioPlayer:
         )
 
     def stop_playback(self):
-        if self.is_playing:
+        if self.is_queued:
             self.device.stop_stream()
             self.device.close()
             self.container.close()
+
+        self.is_queued = False
+        self.track_time = 0.0
+        self.track_size = 0.0
 
 
 @dataclass
@@ -154,6 +171,13 @@ def generate_order(size, starting, is_random):
     return order
 
 
+def format_time(secs: float) -> str:
+    dis_min = math.floor(secs / 60)
+    dis_sec = secs - 60 * dis_min
+
+    return f"{dis_min:3.0f}:{dis_sec:4.1f}"
+
+
 class State:
     stack: [Mode]
     config: Config
@@ -198,6 +222,19 @@ class State:
 
         return mode
 
+    def finish_refresh(self):
+        self.stdscr.move(self.stdscr.getmaxyx()[0] - 1, 0)
+        self.stdscr.refresh()
+
+    def refresh_stdscr_time(self):
+        self.stdscr.addstr(
+            8,
+            0,
+            f"{format_time(self.audio.track_time)} / {format_time(self.audio.track_size)}",
+        )
+
+        self.finish_refresh()
+
     def refresh_stdscr(self):
         self.stdscr.clear()
 
@@ -224,21 +261,23 @@ class State:
             "stack: " + ", ".join([x.name for x in self.stack]),
         )
 
+        # --- Current track ---
+        # Refreshed each loop on its own
+
         # --- Current mode ---
         if len(self.stack) > 0:
             mode = self.stack[-1]
             for i in range(len(mode.track_order)):
                 if i == mode.current_idx:
-                    self.stdscr.addstr(8 + i, 0, "> ")
+                    self.stdscr.addstr(9 + i, 0, "> ")
 
                 name = self.config.playlists[mode.playlist_name].tracks[
                     mode.track_order[i]
                 ]
-                self.stdscr.addstr(8 + i, 2, name)
+                self.stdscr.addstr(9 + i, 2, name)
 
         # --- Refresh ---
-        self.stdscr.move(self.stdscr.getmaxyx()[0] - 1, 0)
-        self.stdscr.refresh()
+        self.finish_refresh()
 
     def play_current_track(self):
         if len(self.stack) != 0:
@@ -325,8 +364,12 @@ class State:
 
                 keycode = self.stdscr.getch()
 
-            if not self.audio.is_playing:
-                self.skip_track()
+            if not self.audio.is_queued:
+                if len(self.stack) != 0:
+                    self.skip_track()
+                    self.refresh_stdscr()
+
+            self.refresh_stdscr_time()
 
             time.sleep(LOOP_PERIOD / 1000)
 
