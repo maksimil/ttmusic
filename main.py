@@ -36,13 +36,37 @@ class Mode:
     loop: bool
 
 
+def generate_order(size, starting, is_random):
+    order = None
+    if random:
+        order = list(range(size))
+        random.shuffle(order)
+
+        if starting != "random":
+            idx = order.index(int(starting))
+            order[0], order[idx] = order[idx], order[0]
+
+    else:
+        idx = None
+
+        if starting == "random":
+            idx = random.randrange(size)
+        else:
+            idx = int(starting)
+
+        order = list(range(idx, size))
+        order.extend(list(range(idx)))
+
+    return order
+
+
 class State:
-    mode_stack: [Mode]
+    stack: [Mode]
     config: Config
     stdscr: curses.window
 
     def __init__(self, config, stdscr):
-        self.mode_stack = []
+        self.stack = []
         self.config = config
         self.stdscr = stdscr
 
@@ -55,28 +79,12 @@ class State:
             track_order=None,
             playlist_name=preset.playlist_name,
             random_order=preset.random_order,
-            loop=preset.random_order,
+            loop=preset.loop,
         )
 
-        if preset.random_order:
-            mode.track_order = list(range(playlist_size))
-            random.shuffle(mode.track_order)
-
-            if preset.starting_track != "random":
-                idx = mode.track_order.index(int(preset.starting_track))
-                mode.track_order[0], mode.track_order[idx] = (
-                    mode.track_order[idx],
-                    mode.track_order[0],
-                )
-        else:
-            idx = None
-            if preset.starting_track == "random":
-                idx = random.randrange(playlist_size)
-            else:
-                idx = int(preset.starting_track)
-
-            mode.track_order = list(range(idx, playlist_size))
-            mode.track_order.extend(list(range(idx)))
+        mode.track_order = generate_order(
+            playlist_size, preset.starting_track, preset.random_order
+        )
 
         return mode
 
@@ -101,17 +109,22 @@ class State:
 
         # --- Stack ---
         self.stdscr.addstr(
-            6, 0, "stack: " + ", ".join([x.name for x in self.mode_stack])
+            6,
+            0,
+            "stack: " + ", ".join([x.name for x in self.stack]),
         )
 
         # --- Current mode ---
-        mode = self.mode_stack[-1]
-        for i in range(len(mode.track_order)):
-            if i == mode.current_idx:
-                self.stdscr.addstr(8 + i, 0, "> ")
+        if len(self.stack) > 0:
+            mode = self.stack[-1]
+            for i in range(len(mode.track_order)):
+                if i == mode.current_idx:
+                    self.stdscr.addstr(8 + i, 0, "> ")
 
-            name = self.config.playlists[mode.playlist_name].tracks[mode.track_order[i]]
-            self.stdscr.addstr(8 + i, 2, name)
+                name = self.config.playlists[mode.playlist_name].tracks[
+                    mode.track_order[i]
+                ]
+                self.stdscr.addstr(8 + i, 2, name)
 
         # --- Refresh ---
         self.stdscr.move(self.stdscr.getmaxyx()[0] - 1, 0)
@@ -126,21 +139,47 @@ class State:
         self.stack.append(self.generate_mode(self.config.modes[n]))
 
     def pop_mode(self):
-        pass
+        self.stack.pop()
 
     def skip_track(self):
+        if len(self.stack) == 0:
+            return
+
         mode = self.stack[-1]
         mode.current_idx += 1
 
-        if mode.current_idx == len(mode.track_order):
+        playlist_size = len(mode.track_order)
+        if mode.current_idx == playlist_size:
             if mode.loop:
                 mode.current_idx = 0
+                if mode.random_order:
+                    mode.track_order = generate_order(
+                        playlist_size,
+                        "random",
+                        True,
+                    )
             else:
                 self.pop_mode()
 
     def begin(self):
         self.refresh_stdscr()
-        self.stdscr.getkey()
+
+        while True:
+            key = self.stdscr.getkey()
+
+            if key == "q":
+                if len(self.stack) == 0:
+                    break
+                else:
+                    self.pop_mode()
+
+            elif key == "s":
+                self.skip_track()
+
+            elif key in self.config.modes:
+                self.add_mode(key)
+
+            self.refresh_stdscr()
 
 
 CONFIG_FILE = "./music.yaml"
