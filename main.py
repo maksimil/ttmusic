@@ -16,7 +16,7 @@ class ModePreset:
     name: str
     playlist_name: str
     starting_track: str | int
-    random_order: bool
+    order: str
     loop: bool
 
 
@@ -78,13 +78,27 @@ class State:
             current_idx=0,
             track_order=None,
             playlist_name=preset.playlist_name,
-            random_order=preset.random_order,
+            random_order=preset.order == "random",
             loop=preset.loop,
         )
 
-        mode.track_order = generate_order(
-            playlist_size, preset.starting_track, preset.random_order
-        )
+        if preset.order == "random":
+            mode.track_order = generate_order(
+                playlist_size, preset.starting_track, True
+            )
+        elif preset.order == "straight":
+            mode.track_order = generate_order(
+                playlist_size, preset.starting_track, False
+            )
+        elif preset.order == "once":
+            idx = None
+
+            if preset.starting_track == "random":
+                idx = random.randrange(playlist_size)
+            else:
+                idx = int(preset.starting_track)
+
+            mode.track_order = [idx]
 
         return mode
 
@@ -209,7 +223,7 @@ def parse_config(config_filename: str):
             name=mode_dict["name"],
             playlist_name=mode_dict["playlist"],
             starting_track=mode_dict["starting_track"],
-            random_order=mode_dict["random_order"],
+            order=mode_dict["order"],
             loop=mode_dict["loop"],
         )
 
